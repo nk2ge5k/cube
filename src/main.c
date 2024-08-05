@@ -32,29 +32,44 @@ i32 main(void) {
   InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "3D Cube");
 
   // Define the camera to look into our 3d world
-  Camera3D camera = { 0 };
-  camera.position = (Vector3){ 10.0f, 10.0f, 10.0f }; // Camera position
-  camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };      // Camera looking at point
-  camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };          // Camera up vector (rotation towards target)
-  camera.fovy = 45.0f;                                // Camera field-of-view Y
-  camera.projection = CAMERA_PERSPECTIVE;             // Camera projection type
+  Camera3D camera = { 
+    .position   = { .x = 10.0f, .y = 10.0f, .z = 10.0f },
+    .target     = { .x = 0.0f,  .y = 0.0f,  .z = 0.0f },
+    .up         = { .x = 0.0f,  .y = 1.0f,  .z = 0.0f },
+    .fovy       = 45.0f,
+    .projection = CAMERA_PERSPECTIVE,
+  };
 
-  Vector3 cubePosition = { 0.0f, 0.0f, 0.0f };
 
-  DisableCursor();                    // Limit cursor to relative movement inside the window
+  // Limit cursor to relative movement inside the window
+  DisableCursor();
 
-  SetTargetFPS(60);                   // Set our game to run at 60 frames-per-second
+  // Set our game to run at 60 frames-per-second
+  SetTargetFPS(60);
+
+  f32 cube_size  = 2.0f;
+  i32 cube_count = 4; // check if power of two
+
+  Vector3 cubePosition = { 
+    .x = 0.0f,
+    .y = 0.0f,
+    .z = 0.0f,
+  };
 
   while (!WindowShouldClose()) {
     // TODO: would be better if camera was orbital, probably.
-    UpdateCamera(&camera, CAMERA_FREE);
+    UpdateCamera(&camera, CAMERA_ORBITAL);
 
     BeginDrawing();
     {
       ClearBackground(BLACK);
 
-      DrawCube(cubePosition, 2.0f, 2.0f, 2.0f, WHITE);
-      DrawCubeWires(cubePosition, 2.0f, 2.0f, 2.0f, GRAY);
+      BeginMode3D(camera);
+      {
+        DrawCube(cubePosition, 2.0f, 2.0f, 2.0f, WHITE);
+        DrawCubeWires(cubePosition, 2.0f, 2.0f, 2.0f, GRAY);
+      }
+      EndMode3D();
 
     }
     EndDrawing();
