@@ -22,6 +22,7 @@
 #ifndef _DEBUG_H
 #define _DEBUG_H
 
+#include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
