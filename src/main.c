@@ -19,6 +19,9 @@
 // OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+#include <time.h>
+#include <stdlib.h>
+
 #include <raylib.h>
 #include <raymath.h>
 
@@ -26,8 +29,8 @@
 #include "debug.h"
 
 // Default window dimensions
-#define DEFAULT_WIDHT  800
-#define DEFALUT_HEIGHT 600
+#define DEFAULT_WIDHT  1000
+#define DEFALUT_HEIGHT 1000
 
 local bool isPowerOfTwo(u32 x) {
   return (x & (x - 1)) == 0;
@@ -149,41 +152,218 @@ local i32 cube(void) {
   return 0;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+/// Game of life
+////////////////////////////////////////////////////////////////////////////////
+
+// Field represents playing field.
 typedef struct {
+  // Size of the side of the field
   u32 stride;
-  bool* v;
+  // Current state of the field
+  bool* current;
+  // Temporary array that holds state of the cells for the next game tick.
+  bool* next;
 } Field;
 
+// fieldInit initializes field with given stride - field is always a square.
 local void fieldInit(Field* field, u32 stride) {
-  if (stride > field->stride) {
-    u32 size = stride * stride;
-    field->v = (bool*)realloc(field->v, size * sizeof(bool));
-  }
-  field->stride = stride;
+  u32 size = stride * stride;
+  field->current = (bool*)calloc(size, sizeof(bool));
+  field->next    = (bool*)calloc(size, sizeof(bool));
+  field->stride  = stride;
 }
 
+// fieldFree frees resouces allocated by the field.
 local void fieldFree(Field* field) {
-  free(field->v);
+  free(field->current);
+  free(field->next);
 }
 
-local u32 fieldCellIndex(Field* field, u32 x, u32 y) {
-  return field->stride * y + x;
+// fieldCellIndex returns index of the cell in the Field.v array.
+local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
+  // Wrap around values
+  x = x % field->stride;
+  y = y % field->stride;
+
+  u32 idx = field->stride * y + x;
+  u32 len = field->stride * field->stride;
+
+  assertf(idx < len, "Index %u is out of bounds (length: %u)", idx, len);
+
+  return idx;
 }
 
-local bool fieldCellIsAlive(Field* field, u32 x, u32 y) {
+// fieldCellSet sets cell state.
+local void fieldCellSet(Field* field, i32 x, i32 y, bool alive) {
   u32 idx = fieldCellIndex(field, x, y);
-  return field->v[idx];
+  field->current[idx] = alive;
 }
 
-local void fieldCellSet(Field* field, u32 x, u32 y, bool alive) {
+// fieldCellIsAlive checks if the cell at given coordinates is alive.
+local bool fieldCellIsAlive(Field* field, i32 x, i32 y) {
   u32 idx = fieldCellIndex(field, x, y);
-  field->v[idx] = alive;
+  return field->current[idx];
+}
+
+// fieldNext returns state of the cell at the next game tick.
+local bool fieldNext(Field* field, i32 x, i32 y) {
+  u32 alive_neighbors = 0;
+  alive_neighbors += fieldCellIsAlive(field, x - 1, y);     // W
+  alive_neighbors += fieldCellIsAlive(field, x - 1, y - 1); // NW
+  alive_neighbors += fieldCellIsAlive(field, x, y - 1);     // N
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y - 1); // NE
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y);     // E
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y + 1); // SE
+  alive_neighbors += fieldCellIsAlive(field, x, y + 1);     // S
+  alive_neighbors += fieldCellIsAlive(field, x - 1, y + 1); // SW
+
+	// Return next state according to the game rules:
+	//   exactly 3 neighbors: on,
+	//   exactly 2 neighbors: maintain current state,
+	//   otherwise: off.
+  return alive_neighbors == 3
+    || (alive_neighbors == 2 && fieldCellIsAlive(field, x, y));
+}
+
+// fieldUpdate updates current state of the field.
+local void fieldUpdate(Field* field) {
+  // @slow: I am not sure but it seems like it would be faster to work
+  //  with the array directly rather then converting x and y coordinates
+  //  to the index.
+  //  At least iteration through the array is somewhat sequential, probably
+  //  will not be predicted correctly because of fieldNext function that
+  //  accessing cells out of the order.
+  for (u32 y = 0; y < field->stride; y++) {
+    for (u32 x = 0; x < field->stride; x++) {
+      u32 index = fieldCellIndex(field, x, y);
+      field->next[index] = fieldNext(field, x, y);
+    }
+  }
+
+  usize size = (field->stride * field->stride) * sizeof(bool);
+
+  // Updating current state of the field
+  memcpy(field->current, field->next, size);
+}
+
+local i32 randomi32(i32 min, i32 max) {
+  return rand() % (max + 1 - min) + min;
+}
+
+// Game holds data necessary for the rendering
+typedef struct {
+  // Field rectangle
+  Rectangle rect;
+  // Field
+  Field field;
+
+  // Pause is a flag that stops game ticks
+  bool pause;
+  // Number of seconds per single game tick
+  f64 seconds_per_tick;
+  // Time of the last tick
+  f64 last_tick_at;
+} Game;
+
+// gameCreate creates new game with given field size and update speed
+local Game gameCreate(Rectangle rect, u32 field_size, f64 seconds_per_tick) {
+  Game game = {
+    .rect             = rect,
+    .pause            = true,
+    .seconds_per_tick = seconds_per_tick,
+    .last_tick_at     = 0,
+  };
+  fieldInit(&game.field, field_size);
+
+  return game;
+}
+
+// gameClose closes the game and frees allocated resources.
+local void gameClose(Game* game) {
+  game->pause = true;
+  fieldFree(&game->field);
+}
+
+// gameUpdate updates game state form the user inputs as well as from ticks
+local void gameUpdate(Game* game) {
+  // Toggle pause on space.
+  if (IsKeyPressed(KEY_SPACE)) {
+    game->pause = !game->pause;
+  }
+
+  if (game->pause && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+    Vector2 pos = GetMousePosition();
+    if (CheckCollisionPointRec(pos, game->rect)) {
+      f32 cell_width  = game->rect.width  / game->field.stride;
+      f32 cell_height = game->rect.height / game->field.stride;
+
+      i32 x = (pos.x - game->rect.x) / cell_width;
+      i32 y = (pos.y - game->rect.y) / cell_height;
+
+      bool alive = fieldCellIsAlive(&game->field, x, y);
+      fieldCellSet(&game->field, x, y, !alive);
+    }
+  }
+
+  f64 time = GetTime();
+  if (!game->pause && (time - game->last_tick_at) > game->seconds_per_tick) {
+    fieldUpdate(&game->field);
+    game->last_tick_at = time;
+  }
+}
+
+// gameRender renders game field and updates game state if necessary
+local void gameRender(Game* game) {
+  f32 cell_width  = game->rect.width  / game->field.stride;
+  f32 cell_height = game->rect.height / game->field.stride;
+
+  for (u32 y = 0; y < game->field.stride; y++) {
+    for (u32 x = 0; x < game->field.stride; x++) {
+      Rectangle rect = {
+        .x      = game->rect.x + (cell_width * x),
+        .y      = game->rect.y + (cell_height * y),
+        .width  = cell_width,
+        .height = cell_height,
+      };
+      Color color = fieldCellIsAlive(&game->field, x, y) ? BLACK : WHITE;
+
+      DrawRectangleRec(rect, color);
+    }
+  }
+  DrawRectangleLinesEx(game->rect, 2, LIGHTGRAY);
 }
 
 local i32 gameOfLife(void) {
   InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "Game of life");
 
-  i32 size = 20;
+  i32 width  = GetScreenWidth();
+  i32 height = GetScreenHeight();
+  i32 min    = (width < height) ? width : height;
+
+  Rectangle rect = {
+    .width  = min,
+    .height = min,
+    .x      = (width - min) / 2.0f,
+    .y      = (height - min) / 2.0f,
+  };
+
+  Game game = gameCreate(rect, 200, 0.05);
+
+  SetTargetFPS(60);
+  while (!WindowShouldClose()) {
+    gameUpdate(&game);
+
+    BeginDrawing();
+    {
+      ClearBackground(WHITE);
+      gameRender(&game);
+    }
+    EndDrawing();
+  }
+
+  gameClose(&game);
+  return 0;
 }
 
 i32 main(void) {
