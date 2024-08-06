@@ -173,21 +173,28 @@ local i32 cube(void) {
 /// Game of life
 ////////////////////////////////////////////////////////////////////////////////
 
+typedef enum {
+  EMPTY  = 0,
+  DEAD   = 2,
+  DIYING = 3,
+  ALIVE  = 4,
+} State;
+
 // Field represents playing field.
 typedef struct {
   // Size of the side of the field
   u32 stride;
   // Current state of the field
-  bool* current;
+  u8* current;
   // Temporary array that holds state of the cells for the next game tick.
-  bool* next;
+  u8* next;
 } Field;
 
 // fieldInit initializes field with given stride - field is always a square.
 local void fieldInit(Field* field, u32 stride) {
   u32 size = stride * stride;
-  field->current = (bool*)calloc(size, sizeof(bool));
-  field->next    = (bool*)calloc(size, sizeof(bool));
+  field->current = (u8*)calloc(size, sizeof(u8));
+  field->next    = (u8*)calloc(size, sizeof(u8));
   field->stride  = stride;
 }
 
@@ -211,19 +218,25 @@ local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
 }
 
 // fieldCellSet sets cell state.
-local void fieldCellSet(Field* field, i32 x, i32 y, bool alive) {
+local void fieldCellSet(Field* field, i32 x, i32 y, State state) {
   u32 idx = fieldCellIndex(field, x, y);
-  field->current[idx] = alive;
+  field->current[idx] = state;
 }
 
-// fieldCellIsAlive checks if the cell at given coordinates is alive.
-local bool fieldCellIsAlive(Field* field, i32 x, i32 y) {
+// fieldCellState returns cell state
+local State fieldCellState(Field* field, i32 x, i32 y) {
   u32 idx = fieldCellIndex(field, x, y);
   return field->current[idx];
 }
 
+// fieldCellIsAlive checks if the cell at given coordinates is alive.
+local bool fieldCellIsAlive(Field* field, i32 x, i32 y) {
+  return fieldCellState(field, x, y) == ALIVE;
+}
+
+
 // fieldNext returns state of the cell at the next game tick.
-local bool fieldNext(Field* field, i32 x, i32 y) {
+local State fieldNext(Field* field, i32 x, i32 y) {
   u32 alive_neighbors = 0;
   alive_neighbors += fieldCellIsAlive(field, x,     y + 1); // S
   alive_neighbors += fieldCellIsAlive(field, x - 1, y + 1); // SW
@@ -234,12 +247,25 @@ local bool fieldNext(Field* field, i32 x, i32 y) {
   alive_neighbors += fieldCellIsAlive(field, x + 1, y    ); // E
   alive_neighbors += fieldCellIsAlive(field, x + 1, y + 1); // SE
 
-	// Return next state according to the game rules:
+  State state = fieldCellState(field, x, y);
+
+	// Alive when:
 	//   exactly 3 neighbors: on,
 	//   exactly 2 neighbors: maintain current state,
-	//   otherwise: off.
-  return alive_neighbors == 3
-    || (alive_neighbors == 2 && fieldCellIsAlive(field, x, y));
+  if (alive_neighbors == 3 || (alive_neighbors == 2 && state == ALIVE)) {
+    return ALIVE;
+  }
+
+  switch (state) {
+    case ALIVE:
+      return DIYING;
+    case DIYING:
+      return DEAD;
+    case DEAD:
+      return DEAD;
+    default:
+      return EMPTY;
+  }
 }
 
 // fieldUpdate updates current state of the field.
@@ -336,7 +362,7 @@ local void gameUpdate(Game* game) {
 
       if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
         bool alive = fieldCellIsAlive(&game->field, x, y);
-        fieldCellSet(&game->field, x, y, !alive);
+        fieldCellSet(&game->field, x, y, alive ? DEAD : ALIVE);
       } else {
         game->x = x;
         game->y = y;
@@ -394,7 +420,21 @@ local void gameRender(Game* game) {
 
   for (u32 y = 0; y < game->field.stride; y++) {
     for (u32 x = 0; x < game->field.stride; x++) {
-      Color color = fieldCellIsAlive(&game->field, x, y) ? BLACK : WHITE;
+      Color color;
+      switch (fieldCellState(&game->field, x, y)) {
+        case EMPTY:
+          color = WHITE;
+          break;
+        case DEAD:
+          color = Fade(DARKBLUE, 0.2);
+          break;
+        case DIYING:
+          color = DARKBLUE;
+          break;
+        case ALIVE:
+          color = DARKGREEN;
+          break;
+      }
       gameRenderCell(game, x, y, color);
     }
   }
@@ -406,15 +446,16 @@ local void gameRender(Game* game) {
     Color primary   = GRAY;
     Color secondary = Fade(primary, 0.2);
 
-    gameRenderCell(game, x, y, primary);
-    gameRenderCell(game, x - 1, y, secondary);     // W
+    gameRenderCell(game, x,     y,     primary);
+    gameRenderCell(game, x - 1, y,     secondary); // W
     gameRenderCell(game, x - 1, y - 1, secondary); // NW
-    gameRenderCell(game, x, y - 1, secondary);     // N
+    gameRenderCell(game, x,     y - 1, secondary); // N
     gameRenderCell(game, x + 1, y - 1, secondary); // NE
-    gameRenderCell(game, x + 1, y, secondary);     // E
+    gameRenderCell(game, x + 1, y,     secondary); // E
     gameRenderCell(game, x + 1, y + 1, secondary); // SE
-    gameRenderCell(game, x, y + 1, secondary);     // S
+    gameRenderCell(game, x,     y + 1, secondary); // S
     gameRenderCell(game, x - 1, y + 1, secondary); // SW
+                                                   //
     textDrawf(10, 10, GetFontDefault(), 20, 1, BLACK,
       "X: %d Y: %d", game->x, game->y);
     textDrawf(10, 30, GetFontDefault(), 20, 1, BLACK,
