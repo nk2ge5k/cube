@@ -57,6 +57,23 @@ local Color lerpColor2(f64 amount, Color start, Color end) {
   return result;
 }
 
+Vector2 textDrawf(f32 x, f32 y,
+    Font font, i32 font_size, i32 font_spacing, Color color,
+    const char *format, ...) {
+  char buf[1024];
+
+  va_list argptr;
+  va_start(argptr, format);
+  vsnprintf(buf, 1024, format, argptr);
+  va_end(argptr);
+
+  Vector2 size = MeasureTextEx(font, buf, font_size, font_spacing);
+  Vector2 pos  = { .x = CAST(f32, x), .y = CAST(f32, y) };
+  DrawTextEx(font, buf, pos, font_size, font_spacing, color);
+
+  return size;
+}
+
 local i32 cube(void) {
 
   InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "3D Cube");
@@ -180,9 +197,8 @@ local void fieldFree(Field* field) {
   free(field->next);
 }
 
-// fieldCellIndex returns index of the cell in the Field.v array.
+// fieldCellIndex returns index of the cell in the array.
 local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
-  // Wrap around values
   x = x % field->stride;
   y = y % field->stride;
 
@@ -209,14 +225,14 @@ local bool fieldCellIsAlive(Field* field, i32 x, i32 y) {
 // fieldNext returns state of the cell at the next game tick.
 local bool fieldNext(Field* field, i32 x, i32 y) {
   u32 alive_neighbors = 0;
-  alive_neighbors += fieldCellIsAlive(field, x - 1, y);     // W
-  alive_neighbors += fieldCellIsAlive(field, x - 1, y - 1); // NW
-  alive_neighbors += fieldCellIsAlive(field, x, y - 1);     // N
-  alive_neighbors += fieldCellIsAlive(field, x + 1, y - 1); // NE
-  alive_neighbors += fieldCellIsAlive(field, x + 1, y);     // E
-  alive_neighbors += fieldCellIsAlive(field, x + 1, y + 1); // SE
-  alive_neighbors += fieldCellIsAlive(field, x, y + 1);     // S
+  alive_neighbors += fieldCellIsAlive(field, x,     y + 1); // S
   alive_neighbors += fieldCellIsAlive(field, x - 1, y + 1); // SW
+  alive_neighbors += fieldCellIsAlive(field, x - 1, y    ); // W
+  alive_neighbors += fieldCellIsAlive(field, x - 1, y - 1); // NW
+  alive_neighbors += fieldCellIsAlive(field, x,     y - 1); // N
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y - 1); // NE
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y    ); // E
+  alive_neighbors += fieldCellIsAlive(field, x + 1, y + 1); // SE
 
 	// Return next state according to the game rules:
 	//   exactly 3 neighbors: on,
@@ -258,6 +274,11 @@ typedef struct {
   // Field
   Field field;
 
+  bool selected;
+  // selected coordinates
+  i32 x;
+  i32 y;
+
   // Pause is a flag that stops game ticks
   bool pause;
   // Number of seconds per single game tick
@@ -292,7 +313,19 @@ local void gameUpdate(Game* game) {
     game->pause = !game->pause;
   }
 
-  if (game->pause && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+  f64 spt = game->seconds_per_tick;
+  if (IsKeyDown(KEY_W)) {
+    spt -= 0.01;
+  } else if (IsKeyDown(KEY_S)) {
+    spt += 0.01;
+  }
+
+  if (spt > 0) {
+    game->seconds_per_tick = spt;
+  }
+
+
+  if (game->pause) {
     Vector2 pos = GetMousePosition();
     if (CheckCollisionPointRec(pos, game->rect)) {
       f32 cell_width  = game->rect.width  / game->field.stride;
@@ -301,9 +334,18 @@ local void gameUpdate(Game* game) {
       i32 x = (pos.x - game->rect.x) / cell_width;
       i32 y = (pos.y - game->rect.y) / cell_height;
 
-      bool alive = fieldCellIsAlive(&game->field, x, y);
-      fieldCellSet(&game->field, x, y, !alive);
+      if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        bool alive = fieldCellIsAlive(&game->field, x, y);
+        fieldCellSet(&game->field, x, y, !alive);
+      } else {
+        game->x = x;
+        game->y = y;
+      }
+
+      game->selected = true;
     }
+  } else {
+    game->selected = false;
   }
 
   f64 time = GetTime();
@@ -313,24 +355,72 @@ local void gameUpdate(Game* game) {
   }
 }
 
-// gameRender renders game field and updates game state if necessary
-local void gameRender(Game* game) {
+local void gameRenderCell(Game* game, i32 x, i32 y, Color color) {
+  x = x % game->field.stride;
+  y = y % game->field.stride;
+
   f32 cell_width  = game->rect.width  / game->field.stride;
   f32 cell_height = game->rect.height / game->field.stride;
 
+  Rectangle rect = {
+    .x      = game->rect.x + (cell_width * x),
+    .y      = game->rect.y + (cell_height * y),
+    .width  = cell_width,
+    .height = cell_height,
+  };
+
+  DrawRectangleRec(rect, color);
+}
+
+local void gameRenderCellLines(Game* game, i32 x, i32 y, f32 thick, Color color) {
+  x = x % game->field.stride;
+  y = y % game->field.stride;
+
+  f32 cell_width  = game->rect.width  / game->field.stride;
+  f32 cell_height = game->rect.height / game->field.stride;
+
+  Rectangle rect = {
+    .x      = game->rect.x + (cell_width * x),
+    .y      = game->rect.y + (cell_height * y),
+    .width  = cell_width,
+    .height = cell_height,
+  };
+
+  DrawRectangleLinesEx(rect, thick, color);
+}
+
+// gameRender renders game field and updates game state if necessary
+local void gameRender(Game* game) {
+
   for (u32 y = 0; y < game->field.stride; y++) {
     for (u32 x = 0; x < game->field.stride; x++) {
-      Rectangle rect = {
-        .x      = game->rect.x + (cell_width * x),
-        .y      = game->rect.y + (cell_height * y),
-        .width  = cell_width,
-        .height = cell_height,
-      };
       Color color = fieldCellIsAlive(&game->field, x, y) ? BLACK : WHITE;
-
-      DrawRectangleRec(rect, color);
+      gameRenderCell(game, x, y, color);
     }
   }
+
+  if (game->selected) {
+    i32 x = game->x;
+    i32 y = game->y;
+
+    Color primary   = GRAY;
+    Color secondary = Fade(primary, 0.2);
+
+    gameRenderCell(game, x, y, primary);
+    gameRenderCell(game, x - 1, y, secondary);     // W
+    gameRenderCell(game, x - 1, y - 1, secondary); // NW
+    gameRenderCell(game, x, y - 1, secondary);     // N
+    gameRenderCell(game, x + 1, y - 1, secondary); // NE
+    gameRenderCell(game, x + 1, y, secondary);     // E
+    gameRenderCell(game, x + 1, y + 1, secondary); // SE
+    gameRenderCell(game, x, y + 1, secondary);     // S
+    gameRenderCell(game, x - 1, y + 1, secondary); // SW
+    textDrawf(10, 10, GetFontDefault(), 20, 1, BLACK,
+      "X: %d Y: %d", game->x, game->y);
+    textDrawf(10, 30, GetFontDefault(), 20, 1, BLACK,
+      "INDEX: %u", fieldCellIndex(&game->field, game->x, game->y));
+  }
+
   DrawRectangleLinesEx(game->rect, 2, LIGHTGRAY);
 }
 
@@ -348,7 +438,7 @@ local i32 gameOfLife(void) {
     .y      = (height - min) / 2.0f,
   };
 
-  Game game = gameCreate(rect, 200, 0.05);
+  Game game = gameCreate(rect, 100, 0.05);
 
   SetTargetFPS(60);
   while (!WindowShouldClose()) {
