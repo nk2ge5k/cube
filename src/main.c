@@ -47,6 +47,13 @@ local f64 clamp(f64 val, f64 min, f64 max) {
   return val;
 }
 
+local i32 modi32(i32 a, i32 b) {
+  if (a < 0) {
+    return (b + a) % b;
+  }
+  return a % b;
+}
+
 local Color lerpColor2(f64 amount, Color start, Color end) {
   Color result = {
     .r = lerpU8(start.r, end.r, amount),
@@ -75,7 +82,6 @@ Vector2 textDrawf(f32 x, f32 y,
 }
 
 local i32 cube(void) {
-
   InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "3D Cube");
 
   // Define the camera to look into our 3d world
@@ -206,8 +212,8 @@ local void fieldFree(Field* field) {
 
 // fieldCellIndex returns index of the cell in the array.
 local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
-  x = x % field->stride;
-  y = y % field->stride;
+  x = modi32(x, field->stride);
+  y = modi32(y, field->stride);
 
   u32 idx = field->stride * y + x;
   u32 len = field->stride * field->stride;
@@ -382,8 +388,8 @@ local void gameUpdate(Game* game) {
 }
 
 local void gameRenderCell(Game* game, i32 x, i32 y, Color color) {
-  x = x % game->field.stride;
-  y = y % game->field.stride;
+  x = modi32(x, game->field.stride);
+  y = modi32(y, game->field.stride);
 
   f32 cell_width  = game->rect.width  / game->field.stride;
   f32 cell_height = game->rect.height / game->field.stride;
@@ -399,8 +405,8 @@ local void gameRenderCell(Game* game, i32 x, i32 y, Color color) {
 }
 
 local void gameRenderCellLines(Game* game, i32 x, i32 y, f32 thick, Color color) {
-  x = x % game->field.stride;
-  y = y % game->field.stride;
+  x = modi32(x, game->field.stride);
+  y = modi32(y, game->field.stride);
 
   f32 cell_width  = game->rect.width  / game->field.stride;
   f32 cell_height = game->rect.height / game->field.stride;
@@ -426,13 +432,13 @@ local void gameRender(Game* game) {
           color = WHITE;
           break;
         case DEAD:
-          color = Fade(DARKBLUE, 0.2);
+          color = Fade(ORANGE, 0.2);
           break;
         case DIYING:
-          color = DARKBLUE;
+          color = ORANGE;
           break;
         case ALIVE:
-          color = DARKGREEN;
+          color = RED;
           break;
       }
       gameRenderCell(game, x, y, color);
