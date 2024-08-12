@@ -64,7 +64,7 @@ local Color lerpColor2(f64 amount, Color start, Color end) {
   return result;
 }
 
-Vector2 textDrawf(f32 x, f32 y,
+local Vector2 textDrawf(f32 x, f32 y,
     Font font, i32 font_size, i32 font_spacing, Color color,
     const char *format, ...) {
   char buf[1024];
@@ -79,100 +79,6 @@ Vector2 textDrawf(f32 x, f32 y,
   DrawTextEx(font, buf, pos, font_size, font_spacing, color);
 
   return size;
-}
-
-local i32 cube(void) {
-  InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "3D Cube");
-
-  // Define the camera to look into our 3d world
-  Camera3D camera = { 
-    .position   = { .x = 10.0f, .y = 10.0f, .z = 10.0f },
-    .target     = { .x = 0.0f,  .y = 0.0f,  .z = 0.0f },
-    .up         = { .x = 0.0f,  .y = 1.0f,  .z = 0.0f },
-    .fovy       = 45.0f,
-    .projection = CAMERA_PERSPECTIVE,
-  };
-
-  f32 exterior_cube_side = 6.0f;
-  f32 gap_size           = 0.05f;
-  i32 cubes_per_edge     = 10;
-  f32 scale              = 1.0f;
-
-  // Limit cursor to relative movement inside the window
-  // DisableCursor();
-  SetTargetFPS(60);
-
-  while (!WindowShouldClose()) {
-    if (IsKeyPressed(KEY_O)) {
-      cubes_per_edge++;
-    } else if (cubes_per_edge > 1 && IsKeyPressed(KEY_L)) {
-      cubes_per_edge--;
-    }
-
-    if (IsKeyDown(KEY_I)) {
-      scale += 0.01;
-    } else if (scale > 1 && IsKeyDown(KEY_K)) {
-      scale -= 0.01;
-    }
-
-    f32 interior_cube_size = (exterior_cube_side - (gap_size * (cubes_per_edge - 1))) / cubes_per_edge;
-
-    // TODO: would be better if camera was orbital, probably.
-    UpdateCamera(&camera, CAMERA_ORBITAL);
-
-    BeginDrawing();
-    {
-      ClearBackground(WHITE);
-
-      BeginMode3D(camera);
-
-      f32 end   = exterior_cube_side * 0.5;
-      f32 start = -end;
-      assertf((start + end) == 0, "Expected to center on center");
-
-      f32 half_size = interior_cube_size * 0.5;
-      Vector3 cube_size = {
-        .x = interior_cube_size,
-        .y = interior_cube_size,
-        .z = interior_cube_size,
-      };
-
-      {
-        for (f32 z = start; z <= end; z += interior_cube_size + gap_size) {
-          for (f32 y = start; y <= end; y += interior_cube_size + gap_size) {
-            for (f32 x = start; x <= end; x += interior_cube_size + gap_size) {
-
-              Vector3 position = Vector3Scale(
-                  Vector3AddValue((Vector3){
-                    .x = x,
-                    .y = y,
-                    .z = z,
-                  }, half_size),
-                  scale
-              );
-
-              Vector3 norm = Vector3Normalize(position);
-              Color color = {
-                .r = lerpU8(20, 255, norm.x),
-                .g = lerpU8(20, 255, norm.y),
-                .b = lerpU8(20, 255, norm.z),
-                .a = 0xff,
-              };
-
-              DrawCubeV(position, cube_size, color);
-              // DrawCubeWiresV(position, cube_size, WHITE);
-            }
-          }
-        }
-
-      }
-      EndMode3D();
-
-    }
-    EndDrawing();
-  }
-
-  return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -306,6 +212,13 @@ typedef struct {
   // Field
   Field field;
 
+  // Number of entires (game generations) in the history
+  u32 history_size;
+  // maximum number of entries (game generations) saved in the history
+  u32 max_history_size;
+  // field history
+  u8* history;
+
   bool selected;
   // selected coordinates
   i32 x;
@@ -423,77 +336,123 @@ local void gameRenderCellLines(Game* game, i32 x, i32 y, f32 thick, Color color)
 
 // gameRender renders game field and updates game state if necessary
 local void gameRender(Game* game) {
+  if (!game->pause) return;
 
   for (u32 y = 0; y < game->field.stride; y++) {
     for (u32 x = 0; x < game->field.stride; x++) {
       Color color;
       switch (fieldCellState(&game->field, x, y)) {
         case EMPTY:
-          color = WHITE;
+          color = BLANK;
           break;
         case DEAD:
-          color = Fade(ORANGE, 0.2);
+          color = Fade(BLUE, 0.3);
           break;
         case DIYING:
-          color = ORANGE;
+          color = Fade(BLUE, 0.5);
           break;
         case ALIVE:
-          color = RED;
+          color = Fade(GREEN, 0.5);
           break;
       }
       gameRenderCell(game, x, y, color);
+
+      if (game->pause) {
+        gameRenderCellLines(game, x, y, 0.5f, Fade(GRAY, 0.5));
+      }
     }
   }
 
   if (game->selected) {
     i32 x = game->x;
     i32 y = game->y;
-
-    Color primary   = GRAY;
-    Color secondary = Fade(primary, 0.2);
-
-    gameRenderCell(game, x,     y,     primary);
-    gameRenderCell(game, x - 1, y,     secondary); // W
-    gameRenderCell(game, x - 1, y - 1, secondary); // NW
-    gameRenderCell(game, x,     y - 1, secondary); // N
-    gameRenderCell(game, x + 1, y - 1, secondary); // NE
-    gameRenderCell(game, x + 1, y,     secondary); // E
-    gameRenderCell(game, x + 1, y + 1, secondary); // SE
-    gameRenderCell(game, x,     y + 1, secondary); // S
-    gameRenderCell(game, x - 1, y + 1, secondary); // SW
-                                                   //
-    textDrawf(10, 10, GetFontDefault(), 20, 1, BLACK,
-      "X: %d Y: %d", game->x, game->y);
-    textDrawf(10, 30, GetFontDefault(), 20, 1, BLACK,
-      "INDEX: %u", fieldCellIndex(&game->field, game->x, game->y));
+    gameRenderCell(game, x, y, GRAY);
   }
+}
 
-  DrawRectangleLinesEx(game->rect, 2, LIGHTGRAY);
+local void gameRender3D(Game* game, Camera camera) { 
+  f32 cube_width = 6.0f;               // size of the cube side
+  f32 gap_size   = 1.05f;              // size of the gap between the cubes
+  i32 ncubes     = game->field.stride; // cubes per edge
+
+  f32 interior_cube_size = cube_width / ncubes;
+  f32 half_size          = interior_cube_size * 0.5;
+  f32 end                = cube_width * 0.5;
+  f32 start              = -end;
+  i32 z                  = game->field.stride * 0.5;
+
+  Vector3 cube_vec = {
+    .x = interior_cube_size,
+    .y = interior_cube_size,
+    .z = interior_cube_size,
+  };
+
+  BeginMode3D(camera);
+  for (u32 y = 0; y < game->field.stride; y++) {
+    for (u32 x = 0; x < game->field.stride; x++) {
+      State state = fieldCellState(&game->field, x, y);
+      if (state == EMPTY || state == DEAD) {
+        continue;
+      }
+
+      Vector3 position = {
+        .x = (start + (x * interior_cube_size)),
+        .y = (start + (z * interior_cube_size)),
+        .z = (start + (y * interior_cube_size)),
+      };
+
+      switch (state) {
+        case DIYING:
+          DrawCubeV(position, cube_vec, Fade(GRAY, 0.5));
+          break;
+        case ALIVE:
+          DrawCubeV(position, cube_vec, GRAY);
+          DrawCubeWiresV(position, cube_vec, WHITE);
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  EndMode3D();
 }
 
 local i32 gameOfLife(void) {
   InitWindow(DEFAULT_WIDHT, DEFALUT_HEIGHT, "Game of life");
+
+  Camera3D camera = { 
+    .position   = { .x = 10.0f, .y = 10.0f, .z = 10.0f },
+    .target     = { .x = 0.0f,  .y = 0.0f,  .z = 0.0f },
+    .up         = { .x = 0.0f,  .y = 1.0f,  .z = 0.0f },
+    .fovy       = 45.0f,
+    .projection = CAMERA_PERSPECTIVE,
+  };
 
   i32 width  = GetScreenWidth();
   i32 height = GetScreenHeight();
   i32 min    = (width < height) ? width : height;
 
   Rectangle rect = {
-    .width  = min,
-    .height = min,
-    .x      = (width - min) / 2.0f,
-    .y      = (height - min) / 2.0f,
+    .width  = min / 3.0f,
+    .height = min / 3.0f,
+    .x      = 10.0f,
+    .y      = 10.0f,
   };
 
-  Game game = gameCreate(rect, 100, 0.05);
+  Game game = gameCreate(rect, 20, 0.1);
 
   SetTargetFPS(60);
   while (!WindowShouldClose()) {
+    if (!game.pause) {
+      UpdateCamera(&camera, CAMERA_FREE);
+    }
+
     gameUpdate(&game);
 
     BeginDrawing();
     {
-      ClearBackground(WHITE);
+      ClearBackground(BLACK);
+      gameRender3D(&game, camera);
       gameRender(&game);
     }
     EndDrawing();
@@ -504,8 +463,5 @@ local i32 gameOfLife(void) {
 }
 
 i32 main(void) {
-  if (true) {
-    return gameOfLife();
-  }
-  return cube();
+  return gameOfLife();
 }
