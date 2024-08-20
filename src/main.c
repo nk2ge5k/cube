@@ -18,7 +18,6 @@
 // LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 // OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 // WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 #include <time.h>
 #include <stdlib.h>
 
@@ -116,12 +115,18 @@ local void fieldFree(Field* field) {
   free(field->next);
 }
 
+local u32 cellIndex(u32 stride, i32 x, i32 y) {
+  x = modi32(x, stride);
+  y = modi32(y, stride);
+
+  u32 idx = stride * y + x;
+
+  return idx;
+}
+
 // fieldCellIndex returns index of the cell in the array.
 local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
-  x = modi32(x, field->stride);
-  y = modi32(y, field->stride);
-
-  u32 idx = field->stride * y + x;
+  u32 idx = cellIndex(field->stride, x, y);
   u32 len = field->stride * field->stride;
 
   assertf(idx < len, "Index %u is out of bounds (length: %u)", idx, len);
@@ -133,6 +138,11 @@ local u32 fieldCellIndex(Field* field, i32 x, i32 y) {
 local void fieldCellSet(Field* field, i32 x, i32 y, State state) {
   u32 idx = fieldCellIndex(field, x, y);
   field->current[idx] = state;
+}
+
+local State cellState(u8* cells, u32 stride, i32 x, i32 y) {
+  u32 idx = cellIndex(stride, x, y);
+  return cells[idx];
 }
 
 // fieldCellState returns cell state
@@ -195,7 +205,7 @@ local void fieldUpdate(Field* field) {
     }
   }
 
-  usize size = (field->stride * field->stride) * sizeof(bool);
+  usize size = (field->stride * field->stride) * sizeof(*field->current);
 
   // Updating current state of the field
   memcpy(field->current, field->next, size);
@@ -205,19 +215,93 @@ local i32 randomi32(i32 min, i32 max) {
   return rand() % (max + 1 - min) + min;
 }
 
+typedef struct {
+  // Constant size of the history (maximal difference between start and the end)
+  u32 size;
+  // Constant size of element
+  u32 elem_size;
+
+  // Start of the history (oldest state)
+  u32 start;
+  // End of the history (latest state)
+  u32 end;
+
+  // History data (mem = size * strid * sizeof(u8))
+  u8* data;
+} History;
+
+// historyCreate initializes history with given size.
+local void historyCreate(History* history, u32 elem_size, u32 size) {
+  // Constants
+  history->size      = size;
+  history->elem_size = elem_size;
+  // Cursors
+  history->start     = 0;
+  history->end       = 0;
+  // Data
+  history->data      = gmalloc(elem_size * size * sizeof(*history->data));
+}
+
+local usize historyDataIndex(History* history, u32 index) {
+  // @question: Is it make sense to fix index here (index % history->size)?
+  //  I am afraid that this may complecate wraping, but may be it is opposite?
+  return index % history->size;
+}
+
+
+local void historyPush(History* history, Field field) {
+  u32 field_size = field.stride * field.stride;
+  assertf(history->elem_size == field_size,
+      "History stride does not match field stride %u != %u",
+      history->elem_size, field_size);
+
+  u32 write = historyDataIndex(history, history->end);
+  memcpy(history->data + (write * history->elem_size), field.current, history->elem_size);
+
+  history->end++;
+
+  // Calculate new start for the history
+  u32 diff = history->end - history->start;
+  if (diff > history->size) {
+    history->start += (diff - history->size);
+  }
+}
+
+// historyGetItem copies i-th item from the history to dst array,
+// returns true if item copied successfully, or false if item with index i
+// does not exists.
+local bool historyGetItem(History* history, Field* field, u32 i) {
+  u32 len = history->end - history->start;
+  if (i >= len) {
+    return false;
+  }
+
+  usize data_index = historyDataIndex(history, history->start + i);
+  u8* ptr          = history->data + (data_index * history->elem_size);
+  field->current   = ptr;
+  field->next      = ptr; // just in case
+
+  return true;
+}
+
+// historySize returns size of the history
+local usize historySize(History* history) {
+  return history->end - history->start;
+}
+
+// historyFree frees resources allocated by the history
+local void historyFree(History* history) {
+  gfree(history->data);
+}
+
 // Game holds data necessary for the rendering
 typedef struct {
   // Field rectangle
   Rectangle rect;
   // Field
   Field field;
-
-  // Number of entires (game generations) in the history
-  u32 history_size;
-  // maximum number of entries (game generations) saved in the history
-  u32 max_history_size;
-  // field history
-  u8* history;
+  // Field history
+  History history;
 
   bool selected;
   // selected coordinates
@@ -240,7 +324,9 @@ local Game gameCreate(Rectangle rect, u32 field_size, f64 seconds_per_tick) {
     .seconds_per_tick = seconds_per_tick,
     .last_tick_at     = 0,
   };
+
   fieldInit(&game.field, field_size);
+  historyCreate(&game.history, field_size * field_size, 200);
 
   return game;
 }
@@ -249,6 +335,12 @@ local Game gameCreate(Rectangle rect, u32 field_size, f64 seconds_per_tick) {
 local void gameClose(Game* game) {
   game->pause = true;
   fieldFree(&game->field);
+  historyFree(&game->history);
+}
+
+// gameSaveHistoryState saves current state the history
+local void gameSaveHistoryState(Game* game) {
+  historyPush(&game->history, game->field);
 }
 
 // gameUpdate updates game state form the user inputs as well as from ticks
@@ -257,18 +349,6 @@ local void gameUpdate(Game* game) {
   if (IsKeyPressed(KEY_SPACE)) {
     game->pause = !game->pause;
   }
-
-  f64 spt = game->seconds_per_tick;
-  if (IsKeyDown(KEY_W)) {
-    spt -= 0.01;
-  } else if (IsKeyDown(KEY_S)) {
-    spt += 0.01;
-  }
-
-  if (spt > 0) {
-    game->seconds_per_tick = spt;
-  }
-
 
   if (game->pause) {
     Vector2 pos = GetMousePosition();
@@ -294,22 +374,44 @@ local void gameUpdate(Game* game) {
   }
 
   f64 time = GetTime();
-  if (!game->pause && (time - game->last_tick_at) > game->seconds_per_tick) {
+  bool should_update = (game->pause && IsKeyPressed(KEY_ENTER)) ||
+    (!game->pause && (time - game->last_tick_at) > game->seconds_per_tick);
+
+
+  if (should_update) {
+    gameSaveHistoryState(game);
     fieldUpdate(&game->field);
     game->last_tick_at = time;
   }
 }
 
-local void gameRenderCell(Game* game, i32 x, i32 y, Color color) {
-  x = modi32(x, game->field.stride);
-  y = modi32(y, game->field.stride);
+local Color state2DColor(State state) {
+  switch (state) {
+    case EMPTY:
+      return BLANK;
+      break;
+    case DEAD:
+      return Fade(BLUE, 0.3);
+      break;
+    case DIYING:
+      return Fade(BLUE, 0.5);
+      break;
+    case ALIVE:
+      return Fade(GREEN, 0.5);
+      break;
+  }
+}
 
-  f32 cell_width  = game->rect.width  / game->field.stride;
-  f32 cell_height = game->rect.height / game->field.stride;
+local void renderCell2D(Rectangle area, u32 stride, i32 x, i32 y, Color color) {
+  x = modi32(x, stride);
+  y = modi32(y, stride);
+
+  f32 cell_width  = area.width  / stride;
+  f32 cell_height = area.height / stride;
 
   Rectangle rect = {
-    .x      = game->rect.x + (cell_width * x),
-    .y      = game->rect.y + (cell_height * y),
+    .x      = area.x + (cell_width * x),
+    .y      = area.y + (cell_height * y),
     .width  = cell_width,
     .height = cell_height,
   };
@@ -317,16 +419,17 @@ local void gameRenderCell(Game* game, i32 x, i32 y, Color color) {
   DrawRectangleRec(rect, color);
 }
 
-local void gameRenderCellLines(Game* game, i32 x, i32 y, f32 thick, Color color) {
-  x = modi32(x, game->field.stride);
-  y = modi32(y, game->field.stride);
 
-  f32 cell_width  = game->rect.width  / game->field.stride;
-  f32 cell_height = game->rect.height / game->field.stride;
+local void renderCellLines2D(Rectangle area, u32 stride, i32 x, i32 y, f32 thick, Color color) {
+  x = modi32(x, stride);
+  y = modi32(y, stride);
+
+  f32 cell_width  = area.width  / stride;
+  f32 cell_height = area.height / stride;
 
   Rectangle rect = {
-    .x      = game->rect.x + (cell_width * x),
-    .y      = game->rect.y + (cell_height * y),
+    .x      = area.x + (cell_width * x),
+    .y      = area.y + (cell_height * y),
     .width  = cell_width,
     .height = cell_height,
   };
@@ -334,31 +437,18 @@ local void gameRenderCellLines(Game* game, i32 x, i32 y, f32 thick, Color color)
   DrawRectangleLinesEx(rect, thick, color);
 }
 
-// gameRender renders game field and updates game state if necessary
-local void gameRender(Game* game) {
+// gameRender2D renders game field and updates game state if necessary
+local void gameRender2D(Game* game) {
   if (!game->pause) return;
 
   for (u32 y = 0; y < game->field.stride; y++) {
     for (u32 x = 0; x < game->field.stride; x++) {
-      Color color;
-      switch (fieldCellState(&game->field, x, y)) {
-        case EMPTY:
-          color = BLANK;
-          break;
-        case DEAD:
-          color = Fade(BLUE, 0.3);
-          break;
-        case DIYING:
-          color = Fade(BLUE, 0.5);
-          break;
-        case ALIVE:
-          color = Fade(GREEN, 0.5);
-          break;
-      }
-      gameRenderCell(game, x, y, color);
+      State state = fieldCellState(&game->field, x, y);
+      Color color = state2DColor(state);
 
+      renderCell2D(game->rect, game->field.stride, x, y, color);
       if (game->pause) {
-        gameRenderCellLines(game, x, y, 0.5f, Fade(GRAY, 0.5));
+        renderCellLines2D(game->rect, game->field.stride, x, y, 0.5f, Fade(GRAY, 0.5));
       }
     }
   }
@@ -366,7 +456,7 @@ local void gameRender(Game* game) {
   if (game->selected) {
     i32 x = game->x;
     i32 y = game->y;
-    gameRenderCell(game, x, y, GRAY);
+    renderCell2D(game->rect, game->field.stride, x, y, GRAY);
   }
 }
 
@@ -379,7 +469,7 @@ local void gameRender3D(Game* game, Camera camera) {
   f32 half_size          = interior_cube_size * 0.5;
   f32 end                = cube_width * 0.5;
   f32 start              = -end;
-  i32 z                  = game->field.stride * 0.5;
+  f32 y_start            = -(cube_width);
 
   Vector3 cube_vec = {
     .x = interior_cube_size,
@@ -388,32 +478,76 @@ local void gameRender3D(Game* game, Camera camera) {
   };
 
   BeginMode3D(camera);
-  for (u32 y = 0; y < game->field.stride; y++) {
+  for (u32 z = 0; z < game->field.stride; z++) {
     for (u32 x = 0; x < game->field.stride; x++) {
-      State state = fieldCellState(&game->field, x, y);
+      State state = fieldCellState(&game->field, x, z);
       if (state == EMPTY || state == DEAD) {
         continue;
       }
 
       Vector3 position = {
         .x = (start + (x * interior_cube_size)),
-        .y = (start + (z * interior_cube_size)),
-        .z = (start + (y * interior_cube_size)),
+        .y = (y_start + (0 * interior_cube_size)),
+        .z = (start + (z * interior_cube_size)),
       };
 
-      switch (state) {
-        case DIYING:
-          DrawCubeV(position, cube_vec, Fade(GRAY, 0.5));
-          break;
-        case ALIVE:
-          DrawCubeV(position, cube_vec, GRAY);
-          DrawCubeWiresV(position, cube_vec, WHITE);
-          break;
-        default:
-          break;
+
+      if (state == ALIVE) {
+
+        Vector3 norm = Vector3Normalize(position);
+
+        Color color = {
+          .b = 55 + (200 * norm.x),
+          .g = 55 + (200 * norm.y),
+          .r = 0xff,
+          .a = 0xff,
+        };
+
+        DrawCubeV(position, cube_vec, color);
+        DrawCubeWiresV(position, cube_vec, GRAY);
+      } else {
+        DrawCubeV(position, cube_vec, Fade(GRAY, 0.5));
       }
     }
   }
+
+  Field history_item = { .stride = game->field.stride };
+
+  i32 history_size = historySize(&game->history);
+  for (i32 i = (history_size - 1); i >= 0; i--) {
+    assertf(historyGetItem(&game->history, &history_item, i),
+        "missing expected history item %d", i);
+
+    for (u32 z = 0; z < history_item.stride; z++) {
+      for (u32 x = 0; x < history_item.stride; x++) {
+        State state = fieldCellState(&history_item, x, z);
+        if (state != ALIVE) {
+          continue;
+        }
+
+        i32 y = history_size - i;
+
+        Vector3 position = {
+          .x = (start + (x * interior_cube_size)),
+          .y = (y_start + (y * interior_cube_size)),
+          .z = (start + (z * interior_cube_size)),
+        };
+
+        Vector3 norm = Vector3Normalize(position);
+
+        Color color = {
+          .b = 55 + (200 * norm.x),
+          .g = 55 + (200 * norm.y),
+          .r = 55 + (200 * ((f32)i / (f32)history_size)),
+          .a = 0xff,
+        };
+
+        DrawCubeV(position, cube_vec, color);
+        DrawCubeWiresV(position, cube_vec, GRAY);
+      }
+    }
+  }
+
   EndMode3D();
 }
 
@@ -439,7 +573,7 @@ local i32 gameOfLife(void) {
     .y      = 10.0f,
   };
 
-  Game game = gameCreate(rect, 20, 0.1);
+  Game game = gameCreate(rect, 40, 0.1);
 
   SetTargetFPS(60);
   while (!WindowShouldClose()) {
@@ -453,7 +587,7 @@ local i32 gameOfLife(void) {
     {
       ClearBackground(BLACK);
       gameRender3D(&game, camera);
-      gameRender(&game);
+      gameRender2D(&game);
     }
     EndDrawing();
   }

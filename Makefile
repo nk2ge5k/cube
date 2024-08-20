@@ -11,6 +11,9 @@ build: $(CMAKE_MAKE) ## Build binary
 	@cd $(BUILD_DIR) && make -j 4 1>&2
 .PHONY: build
 
+clean: ## Clean project
+	rm -rf $(ROOT_DIR)/build
+
 help: ## Show this help
 	@echo "\nSpecify a command. The choices are:\n"
 	@grep -hE '^[0-9a-zA-Z_-]+:.*?## .*$$' ${MAKEFILE_LIST} | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[0;36m%-20s\033[m %s\n", $$1, $$2}'
